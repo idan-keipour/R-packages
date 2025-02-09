@@ -1,0 +1,882 @@
+---
+title: "Quiz 2"
+author: "Idan Keipour"
+date: "6 2 2025"
+output: html_document
+---
+
+
+```{r}
+library(ggplot2)
+library(numDeriv)
+```
+
+
+```{r}
+density_function <- function(x, theta1, theta2, theta3) {
+  phi <- dnorm((x - theta2) / theta3) # Standard normal density
+  (1 / theta3) * (1 / (1 + theta1^2)) * (1 + ((x - theta2) / theta3) * theta1)^2 * phi
+}
+
+generate_sample <- function(n, theta1, theta2, theta3) {
+  sample <- numeric(n) 
+  count <- 0 
+  
+  proposal_density <- function(x) dnorm(x, mean = theta2, sd = theta3)
+  proposal_sampler <- function() rnorm(1, mean = theta2, sd = theta3)
+  
+  M <- optimize(
+    function(x) density_function(x, theta1, theta2, theta3) / proposal_density(x),
+    interval = c(theta2 - 5 * theta3, theta2 + 5 * theta3),
+    maximum = TRUE
+  )$objective
+  
+  while (count < n) {
+    x_candidate <- proposal_sampler()
+    u <- runif(1)
+    
+    if (u <= density_function(x_candidate, theta1, theta2, theta3) / (M * proposal_density(x_candidate))) {
+      count <- count + 1
+      sample[count] <- x_candidate
+    }
+  }
+  
+  return(sample)
+}
+
+n_samples <- 300
+theta1 <- 0.4
+theta2 <- 1
+theta3 <- 2
+
+# Generate the random sample
+set.seed(123)
+sample_data <- generate_sample(n_samples, theta1, theta2, theta3)
+
+
+data_frame <- data.frame(x = sample_data) 
+   
+```
+
+
+```{r}
+
+compute_mom_estimators <- function(sample_data, candidate_theta1) {
+  n <- length(sample_data)
+  
+  # Compute sample moments: use 1/n for the variance to match the formulas
+  sample_mean <- mean(sample_data)
+  sample_var  <- mean((sample_data - sample_mean)^2)
+  
+  # Create a data.frame to store the candidate theta1, estimated theta2, theta3, and log-likelihood
+  results <- data.frame(theta1 = candidate_theta1,
+                        theta2 = NA,
+                        theta3 = NA,
+                        loglik = NA)
+  
+  # Loop over candidate theta1 values
+  for (i in seq_along(candidate_theta1)) {
+    th1 <- candidate_theta1[i]
+    # Transform to tilde_theta1:
+    tilde_th1 <- th1 / sqrt(1 + th1^2)
+    
+    # Method-of-moments estimate for theta3:
+    denom <- 1 - 2 * tilde_th1^2 + 4 * tilde_th1^4
+    if (denom <= 0) {
+      # If denominator is nonpositive, skip this candidate.
+      results$theta3[i] <- NA
+      results$theta2[i] <- NA
+      results$loglik[i] <- -Inf
+      next
+    }
+    th3 <- sqrt(sample_var / denom)
+    
+    # Method-of-moments estimate for theta2:
+    th2 <- sample_mean - th3 * (2 * tilde_th1 * sqrt(1 - tilde_th1^2))
+    
+    # Define the density function for X given (theta1, theta2, theta3):
+    density_func <- function(x) {
+      z <- (x - th2) / th3
+      factor <- sqrt(1 - tilde_th1^2) + tilde_th1 * z
+      # f(x) = (1/theta3) * ( [sqrt(1-tilde_th1^2) + tilde_th1*z]^2 ) * dnorm(z)
+      d <- (1 / th3) * (factor^2) * dnorm(z)
+      return(d)
+    }
+    
+    # Compute the log-likelihood for the sample
+    loglik <- sum(log(density_func(sample_data)))
+    
+    # Save the estimates and log-likelihood for this candidate:
+    results$theta1[i] <- th1
+    results$theta2[i] <- th2
+    results$theta3[i] <- th3
+    results$loglik[i] <- loglik
+  }
+  return(results)
+}
+
+# --- Main Code: Choose a grid of candidate theta1 values, compute estimators, and select the best.
+# For example, we try theta1 from -3 to 3:
+candidate_theta1 <- seq(-3, 3, length.out = 50)
+
+# Compute the candidate estimates and corresponding log-likelihoods
+estimates <- compute_mom_estimators(sample_data, candidate_theta1)
+
+# Identify the candidate that gives the highest log-likelihood:
+best_index <- which.max(estimates$loglik)
+initial_estimates <- estimates[best_index, ]
+
+
+logLik_NR <- function(par, data) {
+  # par = c(theta1, theta2, theta3tilde)
+  theta1 <- par[1]
+  theta2 <- par[2]
+  theta3tilde <- par[3]
+  
+  # Transform back to theta3
+  theta3 <- exp(theta3tilde)
+  
+  # Compute the transformed theta1 (denoted theta1_tilde):
+  tilde_theta1 <- theta1 / sqrt(1 + theta1^2)
+  
+  # Standardize the data:
+  z <- (data - theta2) / theta3
+  
+  # Compute the term inside the squared bracket:
+  factor <- sqrt(1 - tilde_theta1^2) + tilde_theta1 * z
+  
+  # Log density for each observation:
+  # Note: -log(theta3) becomes -theta3tilde, since log(theta3)=theta3tilde.
+  log_density <- -theta3tilde + 2 * log(factor) - 0.5 * log(2*pi) - 0.5 * z^2
+  
+  # Return the sum of the log densities (the total log-likelihood)
+  return(sum(log_density))
+}
+
+# Newton-Raphson implementation using numerical gradients and Hessians:
+newton_raphson_NR <- function(data, par_start, tol = 1e-6, max_iter = 100) {
+  par_current <- par_start
+  diff <- Inf
+  iter <- 0
+  cat("Initial parameters (theta1, theta2, theta3tilde):", par_current, "\n")
+  
+  while(diff > tol && iter < max_iter) {
+    iter <- iter + 1
+    # Compute gradient and Hessian using numDeriv:
+    grad_val <- grad(func = logLik_NR, x = par_current, data = data)
+    hess_val <- hessian(func = logLik_NR, x = par_current, data = data)
+    
+    # Newton-Raphson update:
+    par_new <- par_current - solve(hess_val, grad_val)
+    
+    diff <- max(abs(par_new - par_current))
+    par_current <- par_new
+    cat("Iteration", iter, ": parameters =", par_current, "\n")
+  }
+  
+  if(iter == max_iter) {
+    cat("Warning: Newton-Raphson did not converge in", max_iter, "iterations.\n")
+  }
+  
+  return(par_current)
+}
+
+
+# Assume initial method-of-moments estimates:
+initial_estimates <- c(theta1 = 0.4285714, theta2 = 0.8146117, theta3 = 2.005813)
+# Transform theta3 to theta3tilde:
+par_start <- c(initial_estimates[1], initial_estimates[2], log(initial_estimates[3]))
+
+# Run the Newton-Raphson algorithm on the data:
+theta_MLE_transformed <- newton_raphson_NR(data = sample_data, par_start = par_start)
+
+# Convert the optimized parameter vector back to the original parameterization:
+theta_MLE <- c(theta_MLE_transformed[1], theta_MLE_transformed[2], exp(theta_MLE_transformed[3]))
+names(theta_MLE) <- c("theta1", "theta2", "theta3")
+
+logLik_one <- function(p, x) {
+  t1 <- p[1]      # theta1
+  t2 <- p[2]      # theta2
+  g  <- p[3]      # gamma = log(theta3)
+  th3 <- exp(g)   # theta3
+  z <- (x - t2) / th3
+  # Log-likelihood (ignoring additive constants) 
+  L <- - g - log(1 + t1^2) + 2 * log(1 + t1 * z) - 0.5 * z^2
+  return(L)
+}
+
+# Total log-likelihood for the sample
+logLik_total <- function(p, data) {
+  sum(sapply(data, function(x) logLik_one(p, x)))
+}
+
+# Analytic gradient for one observation
+grad_NR_one <- function(p, x) {
+  t1 <- p[1]; t2 <- p[2]; g <- p[3]
+  th3 <- exp(g)
+  z <- (x - t2) / th3
+  # Partial derivative w.r.t. theta1
+  dL_dt1 <- -2 * t1/(1 + t1^2) + 2 * z/(1 + t1 * z)
+  # Partial derivative w.r.t. theta2
+  dL_dt2 <- (z - 2 * t1/(1 + t1 * z)) / th3
+  # Partial derivative w.r.t. g (gamma)
+  dL_dg  <- -1 - (2 * t1 * z)/(1 + t1 * z) + z^2
+  return(c(dL_dt1, dL_dt2, dL_dg))
+}
+
+# Total gradient for the sample
+grad_NR_total <- function(p, data) {
+  grad_sum <- rep(0, 3)
+  for (x in data) {
+    grad_sum <- grad_sum + grad_NR_one(p, x)
+  }
+  return(grad_sum)
+}
+
+# Analytic Hessian for one observation (using derived formulas)
+hess_NR_one <- function(p, x) {
+  t1 <- p[1]; t2 <- p[2]; g <- p[3]
+  th3 <- exp(g)
+  z <- (x - t2) / th3
+  B <- 1 + t1 * z
+  A <- 1 + t1^2
+  
+  # Second derivative with respect to theta1
+  H11 <- - 2 * z^2/(B^2) - 2/A + 4 * t1^2/(A^2)
+  # Second derivative with respect to theta2
+  H22 <- - 1/(th3^2) - 2 * t1^2/(th3^2 * B^2)
+  # Mixed derivative: theta1 and theta2
+  H12 <- - 2/(th3 * B) + 2 * t1 * z/(th3 * B^2)
+  # Mixed derivative: theta1 and g (gamma)
+  H13 <- - 2 * z/(B^2)
+  # Mixed derivative: theta2 and g (gamma)
+  H23 <- - (2 * z + 2 * t1^2 * z/(B^2) - 2 * t1/B) / th3
+  # Second derivative with respect to g (gamma)
+  H33 <- 2 * t1 * z/(B^2) - 2 * z^2
+  
+  # Assemble the Hessian matrix (symmetric)
+  H <- matrix(0, nrow = 3, ncol = 3)
+  H[1,1] <- H11
+  H[2,2] <- H22
+  H[1,2] <- H12; H[2,1] <- H12
+  H[1,3] <- H13; H[3,1] <- H13
+  H[2,3] <- H23; H[3,2] <- H23
+  H[3,3] <- H33
+  return(H)
+}
+
+# Total Hessian for the sample
+hess_NR_total <- function(p, data) {
+  H_total <- matrix(0, nrow = 3, ncol = 3)
+  for (x in data) {
+    H_total <- H_total + hess_NR_one(p, x)
+  }
+  return(H_total)
+}
+
+# Newton-Raphson algorithm using the analytic gradient and Hessian
+newton_Raphson <- function(data, p_start, tol = 1e-6, max_iter = 100) {
+  p_current <- p_start
+  for (iter in 1:max_iter) {
+    grad_val <- grad_NR_total(p_current, data)
+    Hess_val <- hess_NR_total(p_current, data)
+    # Newton-Raphson update: p_new = p_current - inv(Hessian) %*% gradient
+    delta <- solve(Hess_val, grad_val)
+    p_new <- p_current - delta
+    diff <- max(abs(p_new - p_current))
+    
+    if (diff < tol) {
+      
+      return(p_new)
+    }
+    p_current <- p_new
+  }
+  warning("Newton-Raphson did not converge in", max_iter, "iterations.")
+  return(p_current)
+}
+
+
+
+theta_MoM <- c(theta1 = 0.4285714, theta2 = 0.8146117, theta3 = 2.005813)
+p_start <- c(theta_MoM[1], theta_MoM[2], log(theta_MoM[3]))
+
+# Run Newton-Raphson to obtain the MLE in the working parameter space:
+p_MLE <- newton_Raphson(sample_data, p_start)
+
+# Convert back to the original parameterization:
+theta1_MLE <- p_MLE[1]
+theta2_MLE <- p_MLE[2]
+theta3_MLE <- exp(p_MLE[3])
+
+theta_MLE <- c(theta1 = theta1_MLE, theta2 = theta2_MLE, theta3 = theta3_MLE)
+
+logLik_single <- function(theta, x) {
+  t1 <- theta[1]  # theta1
+  t2 <- theta[2]  # theta2
+  t3 <- theta[3]  # theta3; must be > 0
+  if(t3 <= 0) return(-Inf)
+  z <- (x - t2) / t3
+  L <- - log(t3) - log(1 + t1^2) + 2 * log(1 + t1 * z) + dnorm(z, log = TRUE)
+  return(L)
+}
+
+# (b) Analytic gradient for one observation.
+grad_logLik_single <- function(theta, x) {
+  t1 <- theta[1]
+  t2 <- theta[2]
+  t3 <- theta[3]
+  z <- (x - t2) / t3
+  
+  # Partial derivative with respect to theta1:
+  dL_dt1 <- - 2*t1/(1 + t1^2) + 2 * z/(1 + t1 * z)
+  
+  # Partial derivative with respect to theta2:
+  dL_dt2 <- (z / t3) - (2*t1)/(t3 * (1 + t1*z))
+  
+  # Partial derivative with respect to theta3:
+  dL_dt3 <- - 1/t3 - (2*t1*z)/(t3*(1+t1*z)) + (z^2)/t3
+  
+  return(c(dL_dt1, dL_dt2, dL_dt3))
+}
+
+# (c) Analytic Hessian for one observation.
+# We first set A = 1+t1^2 and B = 1+t1*z.
+# For theta3, we derive the second derivative as follows:
+#   Let F = -1 - (2*t1*z)/(B) + z^2.
+#   Then, dL/dt3 = F/t3.
+#   Differentiating, we obtain:
+#      d^2L/dt3^2 = [ (2*t1*z)/(B^2) + (2*t1*z)/B + 1 - 3*z^2 ] / t3^2.
+hess_logLik_single <- function(theta, x) {
+  t1 <- theta[1]
+  t2 <- theta[2]
+  t3 <- theta[3]
+  z <- (x - t2) / t3
+  A <- 1 + t1^2         # A = 1 + theta1^2
+  B <- 1 + t1 * z       # B = 1 + theta1 * z
+  
+  # Second derivative with respect to theta1:
+  H11 <- - 2 * z^2/(B^2) - 2/A + 4*t1^2/(A^2)
+  
+  # Second derivative with respect to theta2:
+  H22 <- - 1/(t3^2) - 2*t1^2/(t3^2 * B^2)
+  
+  # Mixed derivative: theta1 and theta2:
+  H12 <- - 2/(t3*B) + 2*t1*z/(t3*B^2)
+  
+  # Mixed derivative: theta1 and theta3:
+  H13 <- - 2*z/(t3*B) + 2*t1*z^2/(t3*B^2)
+  
+  # Mixed derivative: theta2 and theta3:
+  H23 <- - 2*z/(t3^2) + 2*t1/(t3^2*B) - 2*t1^2*z/(t3^2*B^2)
+  
+  # Second derivative with respect to theta3:
+  H33 <- (2*t1*z/(B^2) + 2*t1*z/B + 1 - 3*z^2) / (t3^2)
+  
+  # Assemble the Hessian matrix (symmetric)
+  H <- matrix(0, nrow = 3, ncol = 3)
+  H[1,1] <- H11
+  H[2,2] <- H22
+  H[1,2] <- H12; H[2,1] <- H12
+  H[1,3] <- H13; H[3,1] <- H13
+  H[2,3] <- H23; H[3,2] <- H23
+  H[3,3] <- H33
+  
+  return(H)
+}
+
+######################################
+# 2. Define functions to sum over sample
+######################################
+
+# Total log-likelihood over the sample:
+total_logLik <- function(theta, data) {
+  sapply(data, function(x) logLik_single(theta, x)) %>% sum()
+  # If not allowed to use %>%, you can write:
+  # sum(sapply(data, function(x) logLik_single(theta, x)))
+}
+
+# Total gradient (sum over observations):
+total_grad <- function(theta, data) {
+  grad_sum <- Reduce("+", lapply(data, function(x) grad_logLik_single(theta, x)))
+  return(grad_sum)
+}
+
+# Total Hessian (sum over observations):
+total_hess <- function(theta, data) {
+  H_total <- matrix(0, nrow = 3, ncol = 3)
+  for (x in data) {
+    H_total <- H_total + hess_logLik_single(theta, x)
+  }
+  return(H_total)
+}
+
+######################################
+# 3. Define g(theta)=mu and its gradient (delta method)
+######################################
+
+# Mean function: mu = theta2 + theta3*(2*theta1/(1+theta1^2))
+g_fun <- function(theta) {
+  t1 <- theta[1]
+  t2 <- theta[2]
+  t3 <- theta[3]
+  mu <- t2 + t3 * (2*t1/(1+t1^2))
+  return(mu)
+}
+
+# Analytic gradient of g(theta) with respect to theta:
+grad_g <- function(theta) {
+  t1 <- theta[1]
+  t2 <- theta[2]  # appears linearly
+  t3 <- theta[3]
+  dgdtheta1 <- t3 * (2*(1-t1^2)/(1+t1^2)^2)
+  dgdtheta2 <- 1
+  dgdtheta3 <- 2*t1/(1+t1^2)
+  return(c(dgdtheta1, dgdtheta2, dgdtheta3))
+}
+
+######################################
+# 4. Compute the Confidence Interval for mu
+######################################
+
+
+theta_MLE <- c(theta1 = 0.4094813, theta2 = 0.8685613 , theta3 = 1.9940285)
+
+# Compute the plug-in estimate of mu:
+mu_hat <- g_fun(theta_MLE)
+```
+
+
+
+
+### Q4
+
+
+```{r}
+p_MLE <- newton_Raphson(sample_data, p_start)
+
+# Convert back to the original parameterization:
+theta1_MLE <- p_MLE[1]
+theta2_MLE <- p_MLE[2]
+theta3_MLE <- exp(p_MLE[3])
+
+theta_MLE <- c(theta1 = theta1_MLE, theta2 = theta2_MLE, theta3 = theta3_MLE)
+mu_hat <- g_fun(theta_MLE)
+
+```
+
+
+```{r}
+compute_mu_hat <- function(data) {
+  p_MLE <- newton_Raphson(data, p_start)
+  theta1_MLE <- p_MLE[1]
+  theta2_MLE <- p_MLE[2]
+  theta3_MLE <- exp(p_MLE[3])
+  theta_MLE <- c(theta1 = theta1_MLE, theta2 = theta2_MLE, theta3 = theta3_MLE)
+  return(g_fun(theta_MLE))
+}
+
+double_bootstrap <- function(sample_data, R = 1000, M = 100, method = "parametric") {
+  
+  mu_boot <- numeric(R)
+  bias_inner <- numeric(R)
+  # First bootstrap loop (R resamples)
+  for (r in 1:R) {
+    if (method == "parametric") {
+      # Generate parametric bootstrap sample using the MLE estimators
+      param_data <- generate_sample(length(sample_data), theta1_MLE, theta2_MLE, theta3_MLE)
+    } else {
+      # Nonparametric bootstrap (resampling with replacement)
+      param_data <- sample(sample_data, replace = TRUE)
+    }
+    
+    mu_boot[r] <- compute_mu_hat(param_data)
+    # Second bootstrap loop (M resamples per R resample)
+    mu_inner <- numeric(M)
+    for (m in 1:M) {
+      if (method == "parametric") {
+        # Estimate parameters from first-level bootstrap sample
+        p_MLE_rm <- newton_Raphson(param_data, p_start)
+        theta1_rm <- p_MLE_rm[1]
+        theta2_rm <- p_MLE_rm[2]
+        theta3_rm <- exp(p_MLE_rm[3])
+        
+        # Generate second-level parametric bootstrap sample
+        param_data_inner <- generate_sample(length(param_data), theta1_rm, theta2_rm, theta3_rm)
+      } else {
+        # Nonparametric second-level bootstrap
+        param_data_inner <- sample(param_data, replace = TRUE)
+      }
+      mu_inner[m] <- compute_mu_hat(param_data_inner)
+    }
+    # Compute bias estimate from second-level bootstrap
+    bias_inner[r] <- mean(mu_inner) - mu_boot[r]
+  }
+  # Wrap-up
+  
+  B_hat <- mean(mu_boot) - mu_hat
+  C_hat <- mean(bias_inner) - B_hat
+  
+  B_tilde <- B_hat - C_hat
+  mu_hat_corrected <- mu_hat - B_tilde
+  
+  return(list(
+    mu_hat = mu_hat,
+    mu_hat_corrected = mu_hat_corrected,
+    bias_estimate = B_tilde
+  ))
+}
+
+print_results <- function(result, method) {
+  cat("\n=========================================\n")
+  cat("  Double Bootstrap Bias Correction\n")
+  cat("  Method:", method, "\n")
+  cat("=========================================\n")
+  cat(sprintf("Original Estimate (mu_hat):      %.6f\n", result$mu_hat))
+  cat(sprintf("Bias Estimate:                   %.6f\n", result$bias_estimate))
+  cat(sprintf("Bias-Corrected Estimate (mu_hat): %.6f\n", result$mu_hat_corrected))
+  cat("=========================================\n\n")
+}
+
+set.seed(1)
+result_parametric <- double_bootstrap(sample_data, R = 3, M = 10, method = "parametric")
+
+set.seed(5)
+result_nonparametric <- double_bootstrap(sample_data, R = 1000, M = 100, method = "nonparametric")
+
+print_results(result_parametric, "Parametric")
+
+print_results(result_nonparametric, "Nonparametric")  
+```
+
+
+
+```{r}
+library(MASS)  # For generalized inverse
+
+newton_Raphson <- function(data, p_start, tol = 1e-6, max_iter = 100, lambda_init = 1e-6) {
+  p_current <- p_start
+  lambda <- lambda_init  # Initial regularization factor
+
+  for (iter in 1:max_iter) {
+    grad_val <- grad_NR_total(p_current, data)
+    Hess_val <- hess_NR_total(p_current, data)
+
+    # Regularize Hessian adaptively if needed
+    Hess_val_reg <- Hess_val + lambda * diag(nrow(Hess_val))
+
+    # Check if Hessian is singular
+    det_Hess <- det(Hess_val_reg)
+    if (is.na(det_Hess) || abs(det_Hess) < 1e-12) {
+      warning("Singular Hessian detected. Increasing regularization.")
+      lambda <- lambda * 10  # Increase regularization
+      next
+    }
+
+    # Solve for Newton step safely
+    delta <- tryCatch(
+      solve(Hess_val_reg, grad_val), 
+      error = function(e) {
+        warning("Singular Hessian encountered. Using generalized inverse instead.")
+        ginv(Hess_val_reg) %*% grad_val  # Use Moore-Penrose pseudo-inverse
+      }
+    )
+
+    # Limit large updates
+    if (max(abs(delta)) > 1) {
+      delta <- delta / max(abs(delta))  # Normalize step size
+    }
+
+    # Newton-Raphson update
+    p_new <- p_current - delta
+    diff <- max(abs(p_new - p_current))
+
+    if (diff < tol) {
+      return(p_new)
+    }
+
+    p_current <- p_new
+  }
+
+  warning("Newton-Raphson did not converge in", max_iter, "iterations.")
+  return(p_current)
+}
+
+
+```
+
+
+### Q6
+
+#### Q6 a
+
+```{r}
+set.seed(123)
+n <- 300
+sample_data <- rgamma(n, shape = 3, rate = 0.5)
+
+# Step 2: Define the range for x
+x_range <- seq(0, 15, by = 0.02)
+
+# Step 3: Compute the kernel density estimate using h = n^(-0.05) * h_SJ
+hsj <- bw.SJ(sample_data)  # Sheather-Jones bandwidth
+h <- n^(-0.05) * hsj
+kde <- density(sample_data, bw = h, kernel = "epanechnikov",
+               n = length(x_range), from = min(x_range), to = max(x_range))
+
+# Step 4: Compute the 95% confidence intervals
+K_norm_squared <- 4/5#3/5  # ||K||^2_2 for the Epanechnikov kernel
+f_hat <- kde$y
+x_vals <- kde$x
+conf_limit <- 1.96 * sqrt((K_norm_squared * f_hat) / (n * h))
+
+lower_bound <- f_hat - conf_limit
+upper_bound <- f_hat + conf_limit
+
+true_density <- dgamma(x_vals, shape = 3, rate = 0.5)
+
+# Step 6: Plot the estimated density, confidence intervals, and true density
+
+# prepare data for ggplot
+plot_data_a <- data.frame(
+  x = x_vals,
+  estimated_density = f_hat,
+  lower_bound = lower_bound,
+  upper_bound = upper_bound,
+  true_density = dgamma(x_vals, shape = 3, rate = 0.5)
+)
+
+ggplot(plot_data_a, aes(x = x)) +
+  geom_line(aes(y = true_density, color = "True Density"), size = 1) +
+  geom_line(aes(y = estimated_density, color = "Estimated Density"), size = 1) +
+  geom_ribbon(aes(ymin = lower_bound, ymax = upper_bound, fill = "95% Confidence Limits"), alpha = 0.2) +
+  labs(
+    title = "Nonparametric Density Estimate - Pointwise Confidence Interval",
+    x = "x",
+    y = "Density",
+    color = "Legend",
+    fill = " "
+  ) +
+  scale_color_manual(
+    values = c("True Density" = "green", "Estimated Density" = "blue")
+  ) +
+  scale_fill_manual(
+    values = c("95% Confidence Limits" = "red")
+  ) +
+  theme_minimal() +
+  theme(
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  )
+```
+
+#### Q6 b
+
+```{r}
+
+set.seed(123)
+B <- 1000  # Number of bootstrap replications
+alpha <- 0.05  
+n <- length(sample_data)
+
+bootstrap_deviations <- numeric(B)
+for (b in 1:B) {
+  # Generate a sample
+  bootstrap_sample <- sample(sample_data, n, replace = TRUE)
+  # Compute the KDE for the sample
+  kde_bootstrap <- density(bootstrap_sample, bw = h, kernel = "epanechnikov", 
+                           n = length(x_range), from = min(x_range), to = max(x_range))
+    bootstrap_deviations[b] <- max(abs(kde_bootstrap$y - f_hat))
+}
+
+# Calculate critical value d
+d <- quantile(bootstrap_deviations, 1 - alpha)
+
+bootstrap_lower_bound <- f_hat - d
+bootstrap_upper_bound <- f_hat + d
+
+plot_data_b <- data.frame(
+  x = x_vals,
+  estimated_density = f_hat,
+  lower_bound = bootstrap_lower_bound,
+  upper_bound = bootstrap_upper_bound,
+  true_density = dgamma(x_vals, shape = 3, rate = 0.5)
+)
+
+ggplot(plot_data_b, aes(x = x)) +
+  geom_line(aes(y = true_density, color = "True Density"), size = 1) +
+  geom_line(aes(y = estimated_density, color = "Estimated Density"), size = 1) +
+  geom_ribbon(aes(ymin = lower_bound, ymax = upper_bound, fill = "95% Confidence Limits"), alpha = 0.2) +
+  labs(
+    title = "Nonparametric Density Estimate - Bootsrap Confidence Interval",
+    x = "x",
+    y = "Density",
+    color = "Legend",
+    fill = " "
+  ) +
+  scale_color_manual(
+    values = c("True Density" = "green", "Estimated Density" = "blue")
+  ) +
+  scale_fill_manual(
+    values = c("95% Confidence Limits" = "red")
+  ) +
+  theme_minimal() +
+  theme(
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  )
+
+```
+
+
+```{r}
+
+
+# CI test
+plot_data_comparison <- data.frame(
+  x = x_vals,
+  estimated_density = f_hat,
+  pointwise_lower = lower_bound,
+  pointwise_upper = upper_bound,
+  bootstrap_lower = bootstrap_lower_bound,
+  bootstrap_upper = bootstrap_upper_bound,
+  true_density = dgamma(x_vals, shape = 3, rate = 0.5)
+)
+
+ggplot(plot_data_comparison, aes(x = x)) +
+  geom_line(aes(y = true_density, color = "True Density"), size = 1) +
+  geom_line(aes(y = estimated_density, color = "Estimated Density"), size = 1) +
+  geom_line(aes(y = pointwise_lower, color = "Pointwise Confidence Limits"), linetype = "dashed", size = 1) +
+  geom_line(aes(y = pointwise_upper, color = "Pointwise Confidence Limits"), linetype = "dashed", size = 1) +
+  geom_line(aes(y = bootstrap_lower, color = "Bootstrap Confidence Limits"), linetype = "dotted", size = 1) +
+  geom_line(aes(y = bootstrap_upper, color = "Bootstrap Confidence Limits"), linetype = "dotted", size = 1) +
+  labs(
+    title = "Comparison of Pointwise and Bootstrap Confidence Limits",
+    x = "x",
+    y = "Density",
+    color = "Legend"
+  ) +
+  scale_color_manual(
+    values = c(
+      "True Density" = "green",
+      "Estimated Density" = "blue",
+      "Pointwise Confidence Limits" = "orange",
+      "Bootstrap Confidence Limits" = "red"
+    )
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  )
+
+
+plot_data_comparison$pointwise_width <- plot_data_comparison$pointwise_upper - plot_data_comparison$pointwise_lower
+plot_data_comparison$bootstrap_width <- plot_data_comparison$bootstrap_upper - plot_data_comparison$bootstrap_lower
+
+avg_pointwise_width <- mean(plot_data_comparison$pointwise_width)
+avg_bootstrap_width <- mean(plot_data_comparison$bootstrap_width)
+
+if (avg_pointwise_width > avg_bootstrap_width) {
+  result <- "Pointwise confidence intervals are wider on average."
+} else if (avg_pointwise_width < avg_bootstrap_width) {
+  result <- "Bootstrap confidence intervals are wider on average."
+} else {
+  result <- "Pointwise and Bootstrap confidence intervals have the same average width."
+}
+
+cat("Average Pointwise Width:", avg_pointwise_width, "\n")
+cat("Average Bootstrap Width:", avg_bootstrap_width, "\n")
+cat("Comparison Result:", result, "\n")
+
+
+```
+
+
+In some graphs we see that pointwise is better and in some graphs bootstrap is better.
+In general, bootstrap is limited because it assumes equal distance between the edges of the interval for each x, while pointwise is more flexible and allows for variable interval widths
+for different parts of the distribution,  allowing for more localized adjustments based on the data's density.
+
+Therefore, we obtained that on average pointwise confidence intervals were narrower, but it should be noted that both methods were able to contain the true value of the density.
+
+
+
+```{r}
+estimate_coverage <- function(n, h_factor, num_replications, B) {
+  alpha <- 0.05
+  correct_count <- 0  # Counter for successful coverage
+  
+  true_density <- dgamma(x_range, shape = 3, rate = 0.5)
+
+  for (i in 1:num_replications) {
+    sample_c <- rgamma(n, shape = 3, rate = 0.5)
+    hsj_c <- bw.SJ(sample_c)
+    h <- n^(-h_factor) * hsj_c  
+
+    kde <- density(sample_c, bw = h, kernel = "epanechnikov",
+                   n = length(x_range), from = min(x_range), to = max(x_range))
+    f_hat_c <- kde$y
+
+    bootstrap_deviations <- numeric(B)
+    for (b in 1:B) {
+      bootstrap_sample <- sample(sample_c, n, replace = TRUE)
+      kde_bootstrap <- density(bootstrap_sample, bw = h, kernel = "epanechnikov", 
+                               n = length(x_range), from = min(x_range), to = max(x_range))
+      bootstrap_deviations[b] <- max(abs(kde_bootstrap$y - f_hat_c))
+    }
+
+    # Calculate critical value d
+    d <- quantile(bootstrap_deviations, 1 - alpha)
+
+    bootstrap_lower_bound_c <- f_hat_c - d
+    bootstrap_upper_bound_c <- f_hat_c + d
+
+    # Check if true_density is within bounds for the entire range
+    if (all(true_density >= bootstrap_lower_bound_c & true_density <= bootstrap_upper_bound_c)) {
+      correct_count <- correct_count + 1
+    }
+  }
+
+  # Compute and return the coverage probability
+  coverage_probability <- correct_count / num_replications
+  return(coverage_probability)
+}
+
+set.seed(123)  
+
+h_factors <- c(0.025, 0.05)
+sample_sizes <- c(300, 150)
+n_Bootstrap <- 1000  
+n_replications <- 1000  
+
+results <- data.frame(n = integer(), h_factor = numeric(), n_Bootstrap = integer(), 
+                      n_replications = integer(), coverage_probability = numeric())
+
+for (n in sample_sizes) {
+  for (h_factor in h_factors) {
+    coverage <- estimate_coverage(n, h_factor, n_replications, n_Bootstrap)
+    results <- rbind(results, data.frame(n = n, h_factor = h_factor, 
+                                         n_Bootstrap = n_Bootstrap, 
+                                         n_replications = n_replications,
+                                         coverage_probability = coverage))
+  }
+}
+
+print(results)
+```
+
+A larger sample size ($n=300$) provides a more stable density estimate and the coverage is much higher then smaller sample size ($n=150$).
+
+In edition, We can see that larger bandwidth factor (h_factor) slightly improves coverage,
+for both sample sizes (150 and 300). Smaller $h$ value (when h_factor is high - the $h$ is smaller) means increasing the variance. This increased variance is compensated by wider confidence bands, improving coverage.
+
+
+
+
+
+
+
+
+
+
+
