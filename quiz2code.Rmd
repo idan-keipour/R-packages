@@ -1382,69 +1382,7 @@ print_results(result_nonparametric, "Nonparametric")
 
 ```{r warning=FALSE}
 set.seed(123)
-R <- 100
-M <- 30
-
-# Store results
-mu_hat_vec <- numeric(R)  
-mu_hat_corrected_parametric_vec <- numeric(R)  
-mu_hat_corrected_nonparametric_vec <- numeric(R)  
-bias_naive_vec <- numeric(R)  
-bias_corrected_parametric_vec <- numeric(R)  
-bias_corrected_nonparametric_vec <- numeric(R)  
-
-theta_true <- c(theta1 = 0.4, theta2 = 1, theta3 = 2)
-mu_true <- g_fun(theta_true)  # Compute the true value of mu
-
-for (r in 1:R) {
-
-  # Generate a sample
-  sample_data <- generate_sample(n_samples, theta_true[1], theta_true[2], theta_true[3])
-
-  # Compute naive estimator of mu (MLE plug-in)
-  mu_hat <- compute_mu_hat(sample_data)
-  mu_hat_vec[r] <- mu_hat
-
-  # Compute double bootstrap bias correction (Parametric Bootstrap)
-  result_parametric <- double_bootstrap(sample_data, R = M, M = M, method = "parametric")
-  mu_hat_corrected_parametric <- result_parametric$mu_hat_corrected
-  mu_hat_corrected_parametric_vec[r] <- mu_hat_corrected_parametric
-
-  # Compute double bootstrap bias correction (Nonparametric Bootstrap)
-  result_nonparametric <- double_bootstrap(sample_data, R = M, M = M, method = "nonparametric")
-  mu_hat_corrected_nonparametric <- result_nonparametric$mu_hat_corrected
-  mu_hat_corrected_nonparametric_vec[r] <- mu_hat_corrected_nonparametric
-
-  # Compute bias estimates
-  bias_naive_vec[r] <- mu_hat - mu_true
-  bias_corrected_parametric_vec[r] <- mu_hat_corrected_parametric - mu_true
-  bias_corrected_nonparametric_vec[r] <- mu_hat_corrected_nonparametric - mu_true
-}
-
-# Compute final bias estimates
-bias_naive <- mean(bias_naive_vec)
-bias_corrected_parametric <- mean(bias_corrected_parametric_vec)
-bias_corrected_nonparametric <- mean(bias_corrected_nonparametric_vec)
-
-cat("\n=========================================\n")
-cat("  Evaluation of Double Bootstrap Bias Reduction\n")
-cat("=========================================\n")
-cat(sprintf("True Value of mu:                      %.6f\n", mu_true))
-cat(sprintf("Mean Estimate (Naive MLE):             %.6f\n", mean(mu_hat_vec)))
-cat(sprintf("Bias (Naive MLE):                      %.6f\n", bias_naive))
-cat("\n--- Parametric Bootstrap ---\n")
-cat(sprintf("Bias (After Parametric Bootstrap):     %.6f\n", bias_corrected_parametric))
-cat(sprintf("Mean Estimate (Bias-Corrected, Param): %.6f\n", mean(mu_hat_corrected_parametric_vec)))
-cat("\n--- Nonparametric Bootstrap ---\n")
-cat(sprintf("Bias (After Nonparametric Bootstrap):  %.6f\n", bias_corrected_nonparametric))
-cat(sprintf("Mean Estimate (Bias-Corrected, Nonparam): %.6f\n", mean(mu_hat_corrected_nonparametric_vec)))
-cat("=========================================\n")
-```
-
-
-```{r}
-set.seed(123)
-R <- 100
+R <- 50
 M <- 30
 
 # Store results
